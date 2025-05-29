@@ -27,28 +27,24 @@ To run the code you will need to have Anaconda and run the following commands:
 The evaluation script supports several command-line arguments for specific models and environments but defaults to all models and environments:
 
 ```bash
-python full_evaluation.py --models gpt4 claude --games PongDeterministic-v4 BreakoutDeterministic-v4
+python full_evaluation.py --provider openai --model_name gpt-4o --games PongDeterministic-v4 BreakoutDeterministic-v4
 ```
 
 ### Command-line Arguments
 
-- `--models`: Specify which models to evaluate (default: all models)
-  - Available models: `all`, `rand`, `gpt4`, `gpt4o`, `gemini`, `claude`
-  - Example: `--models gpt4 claude`
+- `--provider`: Specify which model provider to use  (default: all models)
+  - Available models: `all`, `rand`, `openai`, `gemini`, `claude`
+  - Example: `--models openai claude`
+
+- `--model_name`: Specify which model to run  (default: None)
+  - Available models: Any model available from the provider, if no model name is provided defaults to GPT-4.1-mini.
+  - Example: `--provider openai --model_name gpt-4.1` or `--provider gemini --model_name gemini-2.5-flash-preview-04-17`
 
 - `--games`: Specify which games to evaluate (default: all games)
   - Example: `--games PongDeterministic-v4 BreakoutDeterministic-v4`
 
 - `--output_dir`: Specify the directory to save experiment results (default: ./experiments)
   - Example: `--output_dir ./my_results`
-
-## New: Analyzing Results
-
-After running experiments, you can analyze and visualize the results using the `analyze_results.py` script:
-
-```bash
-python analyze_results.py --input_dir ./experiments --output_dir ./analysis
-```
 
 ### Analysis Command-line Arguments
 
@@ -64,14 +60,14 @@ The script generates:
 
 Example:
 ```bash
-python analyze_results.py --models gpt4 claude --games Pong Breakout
+python analyze_results.py --models openai gemini --games Pong Breakout
 ```
 
 ## Citing Atari-GPT 
 
 ```
-@misc{waytowich2024atarigptinvestigatingcapabilitiesmultimodal,
-      title={Atari-GPT: Investigating the Capabilities of Multimodal Large Language Models as Low-Level Policies for Atari Games}, 
+@misc{waytowich2024atarigptbenchmarkingmultimodallarge,
+      title={Atari-GPT: Benchmarking Multimodal Large Language Models as Low-Level Policies in Atari Games}, 
       author={Nicholas R. Waytowich and Devin White and MD Sunbeam and Vinicius G. Goecks},
       year={2024},
       eprint={2408.15950},
