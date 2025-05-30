@@ -1,22 +1,18 @@
-import gymnasium as gym
-import time
-import json
-from tqdm import tqdm
-
-from llms import Agent
-import cv2
-import csv
 import os
-import sys
+import csv
 import pickle
-from gymnasium.wrappers import RecordVideo, OrderEnforcing
+import json
+import gymnasium as gym
+import cv2
 import numpy as np
+from tqdm import tqdm
+from gymnasium.wrappers import RecordVideo, OrderEnforcing
+from llms import Agent
 
 # Custom wrapper to prevent video closing on reset
 class ContinuousRecordVideo(RecordVideo):
     def step(self, action):
         observation, reward, terminated, truncated, info = self.env.step(action)
-
         self.video_recorder.capture_frame()
         return observation, reward, terminated, truncated, info
 
@@ -26,304 +22,154 @@ class ContinuousRecordVideo(RecordVideo):
             self.video_recorder.capture_frame()
         return observation, info
 
-class run():
-    def __init__(self, env_name, prompt, model, output_dir="./experiments/"):
-      self.model_name = model
-      self.rewards = 0
-      self.cum_rewards = []
-      self.action_list = []
-      self.header = ["actions", "cumulative_rewards"]
-      self.MODELS = {"OpenAI": ["gpt-4-turbo", "gpt-4o-2024-11-20"], 
-              "Anthropic": ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307", "claude-3.5-sonnet", "max-tokens-3-5-sonnet-2024-07-15"], 
-              "Google": ["gemini-1.5-pro-latest", "gemini-pro", "gemini-pro-vision", "gemini-1.5-flash-latest"], 
-              "Meta": ["llama3-70b-8192", "llama3-8b-8192"]
-              }
-      
-      self.states = []
-      
-      self.steps_taken = 0
 
-      # System prompt 
-      self.sys_prompt = prompt
+class Run:
+    def __init__(self, env_name, provider, output_dir="./experiments/", prompt=None, model_id=None):
+        self.provider = provider.lower()  # 'openai', 'gemini', 'claude' or 'rand'
+        self.sys_prompt = prompt or ""
+        self.env_name = env_name
+        self.action_list = []
+        self.cum_rewards = []
+        self.rewards = 0
+        self.steps_taken = 0
+        self.num_timesteps = 1000
 
-      self.env_name = env_name
+        # Simplify ALE names
+        self.temp_env_name = env_name.replace("ALE/", "")
+        base = self.temp_env_name[:-3]
+        self.new_dir = os.path.join(output_dir, f"{base}_{provider}/")
+        os.makedirs(self.new_dir, exist_ok=True)
 
-      # Get rid of ALE/ for creating folder
-      if "ALE/" in env_name:
-          self.temp_env_name = env_name[4:]
-      else:
-          self.temp_env_name = env_name
+        # Skip test if already done
+        state_file = os.path.join(self.new_dir, f"env_{base}_state.pkl")
+        if os.path.exists(state_file):
+            print(f"\n\nEnvironment '{env_name}' already processed—skipping.\n\n")
+            return
 
-      if self.temp_env_name == 'Frogger':
-          self.pause = 130
-          self.buffer_pause = 134
-      else:
-          self.pause = 15
-          self.buffer_pause = 19
+        # Build environment and video recorder
+        env = gym.make(env_name, render_mode="rgb_array")
+        env = OrderEnforcing(env, disable_render_order_enforcing=True)
+        env.reset()
+        self.env = ContinuousRecordVideo(env=env,
+                                         video_folder=self.new_dir,
+                                         name_prefix=base + "_rollout")
 
-      # Total number of timesteps
-      self.num_timesteps = 1000
+        # mapping of model IDs by provider
+        if self.provider == 'rand':
+            self.rand_rollout()
+        else:
+            if model_id == None:
+                self.MODELS = {
+                    "openai":  ["gpt-4-turbo", "gpt-4.1-mini"], 
+                    "claude":  ["claude-3-opus-20240229","claude-3-opus-20240229"], 
+                    "gemini":  ["gemini-2.5-flash-preview-04-17","gemini-2.5-flash-preview-04-17"],
+                }
 
-      # Create new experiment folders path with model name 
-      self.output_dir = output_dir
-      self.new_dir = os.path.join(self.output_dir, self.temp_env_name[:-3] + '_'+ model +'/')
+                model_id = self.MODELS[self.provider][1]
+                self.model = Agent(
+                    provider=self.provider,
+                    model_name=model_id,
+                    system_prompt=self.sys_prompt,
+                    env=self.env
+                )
 
-      # Create folders if they do not exist
-      os.makedirs(os.path.dirname(self.new_dir), exist_ok=True)
+            else: 
+                self.model = Agent(
+                    provider=self.provider,
+                    model_name=model_id,
+                    system_prompt=self.sys_prompt,
+                    env=self.env
+                )
+            self.model_rollout()
 
-      # Check if the environment state is saved
-      if os.path.exists(self.new_dir + 'env_' + self.temp_env_name[:-3]+ '_state.pkl'):
-          
-          print('\n\nEnvironment Results Already Exist, Going to Next Environment...\n\n')
-          return
+        # Write summary CSV
+        with open(os.path.join(self.new_dir, "actions_rewards.csv"), "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["action", "cumulative_reward"])
+            for a, r in zip(self.action_list, self.cum_rewards):
+                writer.writerow([a, r])
 
-      # Create Environment
-      temp_env = gym.make(env_name, render_mode="rgb_array")
-
-      # Apply the OrderEnforcer wrapper
-      temp_env = OrderEnforcing(temp_env, disable_render_order_enforcing=True)
-
-      # Reset the environment before any rendering
-      temp_env.reset()
-
-      # Record video
-      self.env = ContinuousRecordVideo(env=temp_env, video_folder=self.new_dir, name_prefix=self.temp_env_name[:-3]+"_rollout")
-
-      if self.model_name == 'rand':
-          self.rand_rollout()
-
-      elif self.model_name == 'gpt4':
-          self.model = Agent(model_name=self.MODELS["OpenAI"][0], model = self.model_name, system_message=self.sys_prompt, env=self.env)
-         
-      elif self.model_name == 'gpt4o':
-          self.model = Agent(model_name=self.MODELS["OpenAI"][1], model = self.model_name, system_message=self.sys_prompt, env=self.env)
-            
-      elif self.model_name == 'gemini':
-          self.model = Agent(model_name=self.MODELS["Google"][3], model = self.model_name, system_message=self.sys_prompt, env=self.env)
-            
-      elif self.model_name == 'claude':
-          self.model = Agent(model_name=self.MODELS["Anthropic"][2], model = self.model_name, system_message=self.sys_prompt, env=self.env)
-            
-      if self.model_name != 'rand':   
-          self.model_rollout()
-
-      with open(self.new_dir + 'actions_rewards.csv', 'w') as f:
-          writer = csv.writer(f)
-          writer.writerow(self.header)
-          
-          for action, cum_reward in zip(self.action_list, self.cum_rewards):
-              writer.writerow([action, cum_reward])
 
     def save_states(self, rewards, action):
-
-        # Save the environment's 
-        state = self.env.ale.cloneState()
-
-        # Save the environment's random state
-        random_state = self.env.np_random if hasattr(self.env, 'np_random') else self.env.unwrapped.np_random
-
-        self.states.append((state, random_state, rewards, self.steps_taken, action))
-        
-        # Save the state to pkl file 
-        with open(self.new_dir + 'env_' + self.temp_env_name[:-3]+ '_state.pkl', 'wb') as f:
+        state = self.env.env.ale.cloneState()
+        rand_state = getattr(self.env.env, 'np_random', self.env.env.unwrapped.np_random)
+        self.states = getattr(self, 'states', [])
+        self.states.append((state, rand_state, rewards, self.steps_taken, action))
+        with open(os.path.join(self.new_dir, f"env_{self.temp_env_name[:-3]}_state.pkl"), "wb") as f:
             pickle.dump(self.states, f)
 
+
     def rand_rollout(self):
-        # Start the recorder
         self.env.start_video_recorder()
-
-        observation, info = self.env.reset()
-        
-        # Save the initial state
+        obs, info = self.env.reset()
         self.save_states(self.rewards, 0)
-        progress_bar = tqdm(total=self.num_timesteps, desc=f"Random Rollout ({self.temp_env_name})", unit="steps")
-        for n in range(self.num_timesteps-self.steps_taken):
-            observation = cv2.resize(observation, (512, 512))
+        pbar = tqdm(total=self.num_timesteps, desc=f"Random Rollout ({self.temp_env_name})", unit="step")
 
-            if n < self.pause:
-                action = 0
-                self.action_list.append(action)
-                observation, reward, terminated, truncated, info = self.env.step(action)
-                # Save the state once the action has been performed
-                self.save_states(self.rewards, action)
-
-                self.rewards += reward
-                self.cum_rewards.append(self.rewards)
-            
-            elif n % 2 == 1:
-                # image buffer
-                action = self.env.action_space.sample()
-                self.action_list.append(action)
-
-                observation, reward, terminated, truncated, info = self.env.step(action)
-                # Save the state once the action has been performed
-                self.save_states(self.rewards, action)
-
-                self.rewards += reward
-                self.cum_rewards.append(self.rewards)
-                
-                if terminated or truncated:
-                    observation, info = self.env.reset()
-            else:
-                action = 0
-                self.action_list.append(action)
-                observation, reward, terminated, truncated, info = self.env.step(action)
-                self.env.render()
-
-                # Save the state once the action has been performed
-                self.save_states(self.rewards, action)
-
-                self.rewards += reward
-                self.cum_rewards.append(self.rewards)
-
-                if terminated or truncated:
-                        observation, info = self.env.reset() 
-
+        for _ in range(self.num_timesteps - self.steps_taken):
+            obs = cv2.resize(obs, (512, 512))
+            action = self.env.action_space.sample()
+            self.action_list.append(action)
+            obs, rew, term, trunc, info = self.env.step(action)
+            self.save_states(self.rewards, action)
+            self.rewards += rew
+            self.cum_rewards.append(self.rewards)
+            if term or trunc:
+                obs, info = self.env.reset()
             self.steps_taken += 1
-            progress_bar.update(1)
-            progress_bar.set_postfix({"reward": self.rewards})
-        
-        # Close progress bar
-        progress_bar.close()
-        
-        print('The reward for ' + self.env_name + ' is: ' + str(self.rewards))
-        
-        # Close the environment recorder
+            pbar.update(1)
+            pbar.set_postfix({"reward": self.rewards})
+
+        pbar.close()
+        print(f"Total reward (random): {self.rewards}")
         self.env.close_video_recorder()
-        
-        # Close the environment
         self.env.close()
 
+
     def model_rollout(self):
-        usr_msg1 = 'Analyze this game frame and select the optimal action. Focus on immediate gameplay elements visible in this specific frame, and follow the format: {"reasoning": "detailed step-by-step analysis", "action": X}'
-        
-        # Start the recorder
+        prompt = (
+            'Analyze this game frame and select the optimal action. '
+            'Respond with JSON: {"reasoning":"<text>","action":<int>}.'
+        )
+
         self.env.start_video_recorder()
-
-        observation, info = self.env.reset()
-        
-        # Save the initial state
+        obs, info = self.env.reset()
         self.save_states(self.rewards, 0)
-        progress_bar = tqdm(total=self.num_timesteps, desc=f"{self.model_name} Rollout ({self.temp_env_name})", unit="steps")
+        pbar = tqdm(total=self.num_timesteps, desc=f"{self.provider} Rollout ({self.temp_env_name})", unit="step")
 
+        for n in range(self.num_timesteps - self.steps_taken):
+            obs = cv2.resize(obs, (512, 512))
 
-        for n in range(self.num_timesteps-self.steps_taken):
-            
-            # resize cv2 512x512
-            observation = cv2.resize(observation, (512, 512))
-
-            if n < self.pause:
-                # Perform no-op action
+            if n < 15 or n % 2 == 0:
+                # No-op for initial frames and evens
                 action = 0
-                
-                # Save action 
-                self.action_list.append(action)
-
-                # Perform Action
-                observation, reward, terminated, truncated, info = self.env.step(action)
-
-                self.env.render()
-
-                # Sum reward and save
-                self.rewards += reward
-                self.cum_rewards.append(self.rewards)
-
-                # Check done condition
-                if terminated or truncated:
-                        observation, info = self.env.reset()
-
-            elif n % 2 == 1:
-
-                # Create buffer of 4 frames
-                if n < self.buffer_pause:
-
-                    # Add frame and reason
-                    self.model.add_user_message(observation, usr_msg1)
-
-                    # Get response from model with action
-                    action, full_response = self.model.generate_response(self.new_dir)
-
-                    # Add models reasoning to context
-                    self.model.add_assistant_message()
-                    
-                    # Save action
-                    self.action_list.append(action)
-
-                    # Perform Action
-                    observation, reward, terminated, truncated, info = self.env.step(action)
-
-                    self.env.render()
-                    
-                    # Sum reward and save
-                    self.rewards += reward
-                    self.cum_rewards.append(self.rewards)
-
-                    # Check done condition 
-                    if terminated or truncated:
-                        observation, info = self.env.reset()
-                
-                else:
-                    # Add frame and reason
-                    self.model.add_user_message(observation, usr_msg1)
-
-                    # Have model reason from the given image
-                    action, full_response = self.model.generate_response(self.new_dir)
-
-                    # Add models reasoning to context
-                    self.model.add_assistant_message()
-                
-                    # Save action
-                    self.action_list.append(action)
-                    
-                    # Perform Action
-                    observation, reward, terminated, truncated, info = self.env.step(action)
-
-                    self.env.render()
-
-                    # Sum reward and save
-                    self.rewards += reward
-                    self.cum_rewards.append(self.rewards)
-
-                    # Context buffer of only the 4 most recent frames
-                    # delete oldest context
-                    self.model.delete_messages()
-                    
-                    # Check done condition 
-                    if terminated or truncated:
-                        observation, info = self.env.reset()
-            
             else:
-                # Perform no-op action
-                action = 0
-                
-                # Save action 
-                self.action_list.append(action)
+                # Send frame + prompt
+                self.model.add_user_message(text=prompt, frame=obs)
 
-                # Perform Action
-                observation, reward, terminated, truncated, info = self.env.step(action)
+                # Get model answer
+                action, reasoning = self.model.generate_response(self.new_dir)
+                # Put assistant message into context
+                self.model.add_assistant_message(text=reasoning)
 
-                self.env.render()
-
-                # Sum reward and save
-                self.rewards += reward
-                self.cum_rewards.append(self.rewards)
-
-                # Check done condition
-                if terminated or truncated:
-                        observation, info = self.env.reset() 
-            
-            # Save the state once the action has been performed
+            # Record action & step
+            self.action_list.append(action)
+            obs, rew, term, trunc, info = self.env.step(action)
+            self.env.render()
             self.save_states(self.rewards, action)
+            self.rewards += rew
+            self.cum_rewards.append(self.rewards)
+            
+            # Context buffer of only the 4 most recent frames
+            # Delete oldest context
+            self.model.delete_messages()
+
+            if term or trunc:
+                obs, info = self.env.reset()
 
             self.steps_taken += 1
-            progress_bar.update(1)
-            progress_bar.set_postfix({"reward": self.rewards})
-        
-        # Close progress bar
-        progress_bar.close()
-        
-        # Close the environment recorder
+            pbar.update(1)
+            pbar.set_postfix({"reward": self.rewards})
+
+        pbar.close()
         self.env.close_video_recorder()
-        
-        # Close the environment
         self.env.close()

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Analyze and visualize results from Atari-GPT experiments.
 """
